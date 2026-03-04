@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Lunch Tracker</title>
+  <meta name="theme-color" content="#111827" />
+  <meta name="description" content="Local-only iPad-friendly lunch logging with editable names and CSV export." />
+
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <h1>Lunch Tracker</h1>
+      <div class="sub" id="todayDisplay">—</div>
+    </div>
+    <div class="header-actions">
+      <button class="btn secondary" id="manageNamesBtn" type="button">Manage Names</button>
+      <button class="btn secondary" id="exportBtn" type="button">Export CSV</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h2>Log a lunch</h2>
+
+      <div class="grid">
+        <div class="field">
+          <label for="nameSelect">Name</label>
+          <select id="nameSelect" class="select">
+            <option value="">Select a name…</option>
+          </select>
+          <div class="hint" id="nameHint">Tip: use “Manage Names” to add people.</div>
+        </div>
+
+        <div class="field">
+          <label>Meal choice</label>
+          <div class="segmented" role="radiogroup" aria-label="Meal choice">
+            <label class="seg">
+              <input type="radio" name="mealType" value="Main course" />
+              <span>Main course</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="mealType" value="Main + starter" />
+              <span>Main + starter</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="mealType" value="Main + dessert" />
+              <span>Main + dessert</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions-row">
+        <button class="btn primary" id="saveBtn" type="button">Save</button>
+        <button class="btn ghost" id="clearSelectionBtn" type="button">Clear</button>
+      </div>
+
+      <div class="status" id="statusBox" aria-live="polite"></div>
+    </section>
+
+    <section class="card">
+      <div class="tabs">
+        <button class="tab active" id="tabToday" type="button">Today</button>
+        <button class="tab" id="tabAll" type="button">All entries</button>
+      </div>
+
+      <div id="todayView">
+        <div class="table-wrap">
+          <table class="table" aria-label="Today's entries">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Selection</th>
+                <th>Time</th>
+                <th class="right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="todayTbody"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="todayEmpty">No entries logged for today yet.</div>
+      </div>
+
+      <div id="allView" class="hidden">
+        <div class="filters">
+          <div class="field">
+            <label for="rangeSelect">Date range</label>
+            <select id="rangeSelect" class="select">
+              <option value="today">Today</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="all">All time</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="searchInput">Search name</label>
+            <input id="searchInput" class="input" type="text" placeholder="Type a name…" />
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table" aria-label="All entries">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Day</th>
+                <th>Name</th>
+                <th>Selection</th>
+                <th>Time</th>
+                <th class="right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="allTbody"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="allEmpty">No entries match your filters.</div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="footer-left">
+        <span class="pill" id="namesCountPill">0 names</span>
+        <span class="pill" id="entriesCountPill">0 entries</span>
+      </div>
+      <div class="footer-right">
+        <button class="btn danger subtle" id="wipeDataBtn" type="button" title="Deletes names and entries from this device only.">Wipe local data</button>
+      </div>
+    </footer>
+  </main>
+
+  <!-- Manage Names Modal -->
+  <div class="modal-backdrop hidden" id="namesModalBackdrop" aria-hidden="true"></div>
+  <div class="modal hidden" id="namesModal" role="dialog" aria-modal="true" aria-labelledby="namesModalTitle">
+    <div class="modal-header">
+      <h3 id="namesModalTitle">Manage Names</h3>
+      <button class="icon-btn" id="closeNamesModalBtn" type="button" aria-label="Close">✕</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="row">
+        <input id="newNameInput" class="input" type="text" placeholder="Add a name…" />
+        <button class="btn primary" id="addNameBtn" type="button">Add</button>
+      </div>
+
+      <div class="list" id="namesList" aria-label="Names list"></div>
+
+      <div class="hint">
+        Names are stored on this device only (localStorage). If you clear browser data, they’ll be removed.
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn secondary" id="closeNamesModalBtn2" type="button">Done</button>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div class="modal-backdrop hidden" id="confirmBackdrop" aria-hidden="true"></div>
+  <div class="modal hidden" id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal-header">
+      <h3 id="confirmTitle">Confirm</h3>
+      <button class="icon-btn" id="confirmCloseBtn" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="confirmMessage">—</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn ghost" id="confirmCancelBtn" type="button">Cancel</button>
+      <button class="btn primary" id="confirmOkBtn" type="button">OK</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
