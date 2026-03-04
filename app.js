@@ -195,7 +195,11 @@
     if (current && names.some(n => n.id === current)) {
       nameSelect.value = current;
     }
-  }
+  
+
+    // Keep styling + hint consistent after re-render
+    nameSelect.dispatchEvent(new Event("change"));
+}
 
   function renderNamesList() {
     sortNames();
@@ -532,7 +536,25 @@
 
     exportBtn.addEventListener("click", exportCSV);
 
-    // Tabs
+    
+
+    // Name select: clearer selected state + coloured select once chosen
+    nameSelect.addEventListener("change", () => {
+      const personId = nameSelect.value;
+      const person = names.find(n => n.id === personId);
+
+      // Toggle colour when a real name is selected
+      nameSelect.classList.toggle("has-value", !!person);
+
+      // Make it clearer what is selected
+      const hint = $("#nameHint");
+      if (person) {
+        hint.innerHTML = `Selected: <strong>${person.name}</strong>`;
+      } else {
+        hint.textContent = 'Tip: use “Manage Names” to add people.';
+      }
+    });
+// Tabs
     tabToday.addEventListener("click", () => setTab("today"));
     tabAll.addEventListener("click", () => setTab("all"));
 

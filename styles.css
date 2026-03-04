@@ -438,3 +438,36 @@ body{
 @media (prefers-reduced-motion: reduce){
   * { scroll-behavior:auto !important; transition:none !important; }
 }
+
+/* --- Select clarity improvements (iPad-friendly) --- */
+
+/* Make the selected value clearer by default */
+.select{
+  font-weight: 800;              /* bolder selected value */
+  color: #f9fafb;                /* brighter text */
+}
+
+/* When a name is selected, the select becomes a different colour */
+.select.has-value{
+  background: rgba(37, 99, 235, .22);         /* blue-tinted */
+  border-color: rgba(37, 99, 235, .75);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, .18);
+}
+
+/* Placeholder (“Select a name…”) looks muted */
+.select:invalid{
+  color: rgba(229,231,235,.55);
+  font-weight: 700;
+}
+
+/* Stronger focus */
+.select:focus{
+  border-color: rgba(37,99,235,.85);
+  box-shadow: 0 0 0 5px rgba(37,99,235,.20);
+}
+
+/* Hint line can highlight chosen name */
+.hint strong{
+  color: #ffffff;
+  font-weight: 900;
+}
