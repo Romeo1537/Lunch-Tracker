@@ -471,3 +471,14 @@ body{
   color: #ffffff;
   font-weight: 900;
 }
+
+/* Improve readability of dropdown list items (works in most desktop browsers;
+   iPad/iOS native pickers may ignore this due to OS-level rendering). */
+.select option{
+  color: #111827;
+  background: #ffffff;
+  font-weight: 700;
+}
+.select option:disabled{
+  color: #6b7280;
+}
