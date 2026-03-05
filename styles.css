@@ -482,3 +482,17 @@ body{
 .select option:disabled{
   color: #6b7280;
 }
+
+/* Meal choices layout (7 options) */
+.segmented.segmented-7{
+  grid-template-columns: 1fr;
+}
+@media (min-width: 560px){
+  .segmented.segmented-7{ grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 860px){
+  .segmented.segmented-7{ grid-template-columns: repeat(4, 1fr); }
+  .segmented.segmented-7 .seg span{ font-size: 14px; }
+}
+.segmented.segmented-7 .seg span{ font-size: 14px; }
+}

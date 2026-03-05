@@ -358,17 +358,26 @@
     if (!entry) return;
 
     // Simple prompt-based edit to keep UI minimal
-    const mealOptions = ["Main course", "Main + starter", "Main + dessert"];
+    const mealOptions = ["Starter", "Main course", "Dessert", "Starter + main course", "Main course + dessert", "Starter + dessert", "2 starters"];
     const currentIdx = mealOptions.indexOf(entry.selection);
     const promptText =
-      `Edit selection for ${entry.personName} on ${entry.dateISO}\n` +
-      `1) Main course\n2) Main + starter\n3) Main + dessert\n\n` +
-      `Enter 1, 2, or 3 (current: ${currentIdx >= 0 ? currentIdx + 1 : entry.selection})`;
+      `Edit selection for ${entry.personName} on ${entry.dateISO}
+` +
+      `1) Starter
+2) Main course
+3) Dessert
+4) Starter + main course
+5) Main course + dessert
+6) Starter + dessert
+7) 2 starters
+
+` +
+      `Enter 1–7 (current: ${currentIdx >= 0 ? currentIdx + 1 : entry.selection})`;
 
     const ans = window.prompt(promptText, currentIdx >= 0 ? String(currentIdx + 1) : "");
     if (ans === null) return; // cancelled
     const n = parseInt(ans, 10);
-    if (![1,2,3].includes(n)) return showStatus("Edit cancelled: invalid option.", "warn");
+    if (![1,2,3,4,5,6,7].includes(n)) return showStatus("Edit cancelled: invalid option.", "warn");
 
     entry.selection = mealOptions[n-1];
     persistEntries();
