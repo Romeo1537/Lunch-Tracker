@@ -617,11 +617,11 @@
     if (!("serviceWorker" in navigator)) return;
 
     navigator.serviceWorker.register("sw.js").then((reg) => {
-      // Proactively check for an updated service worker on each load
+      // Check for updates on each load
       reg.update().catch(() => {});
     }).catch(() => {});
 
-    // When a new service worker takes control, reload once so the newest assets are used
+    // Reload once when a new service worker takes control, so latest assets are used
     let reloaded = false;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (reloaded) return;
@@ -629,9 +629,8 @@
       window.location.reload();
     });
   }
-  }
 
-  function bootstrap() {
+function bootstrap() {
     initDateHeader();
     initEvents();
     renderNameSelect();

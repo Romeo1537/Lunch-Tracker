@@ -1,4 +1,4 @@
-const CACHE_NAME = "lunch-tracker-20260305095111";
+const CACHE_NAME = "lunch-tracker-20260305100310";
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -35,7 +35,6 @@ self.addEventListener("fetch", (event) => {
   const isHTML = req.mode === "navigate" || accept.includes("text/html");
   const isAsset = url.pathname.endsWith(".js") || url.pathname.endsWith(".css") || url.pathname.endsWith(".json");
 
-  // Network-first for HTML/CSS/JS to avoid stale updates
   if (isHTML || isAsset) {
     event.respondWith(
       fetch(req)
@@ -49,7 +48,6 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Cache-first for other files (icons, etc.)
   event.respondWith(
     caches.match(req).then((cached) => {
       if (cached) return cached;
