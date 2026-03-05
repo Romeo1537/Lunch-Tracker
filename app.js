@@ -613,9 +613,38 @@
     });
   }
 
+  
   function initPWA() {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
+    if (!("serviceWorker" in navigator)) return;
+
+    navigator.serviceWorker.register("sw.js").then((reg) => {
+      // Check for updates on each load
+      reg.update().catch(() => {});
+
+      // If a new SW is found, it will install and then activate (skipWaiting in sw.js)
+      reg.addEventListener("updatefound", () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+
+        newWorker.addEventListener("statechange", () => {
+          // When installed and there's an existing controller, an update is ready
+          if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+            // Force a single reload when the new SW takes control
+            // (controllerchange will trigger below)
+          }
+        });
+      });
+    }).catch(() => {});
+
+    // When the new service worker takes control, reload once to get the latest assets
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloaded) return;
+      reloaded = true;
+      window.location.reload();
+    });
+  }
+);
     }
   }
 
