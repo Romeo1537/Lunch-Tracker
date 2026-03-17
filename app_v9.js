@@ -1,24 +1,32 @@
-/* Lunch Tracker (local-only)
-   - Names stored in localStorage
-   - Entries stored in localStorage
+/* Lunch Tracker v10 — Cloud-synced via Google Sheets
+   - Names & entries sync to Google Sheets (via Apps Script)
+   - Falls back to localStorage when offline
+   - Offline queue replays when connection returns
+   - Simple shared PIN authentication
    - iPad-friendly UI
 */
 
 (function () {
   "use strict";
 
-  // ---------- Storage keys ----------
+  // ========== CONFIGURATION ==========
+  // Paste your Google Apps Script web-app URL here.
+  // Leave empty ("") to run in local-only mode (no cloud sync).
+  const API_URL = "https://script.google.com/macros/s/AKfycbxzOg_kepcr7qaiEdSRrH1a2Vt-YAjlr5R5PNMe56AgfZuJiut3PEb1sGrIg54m97a5DA/exec";
+
+  // ========== Storage keys ==========
   const KEYS = {
     names: "lt_names_v1",
-    entries: "lt_entries_v1"
+    entries: "lt_entries_v1",
+    pin: "lt_pin",
+    queue: "lt_offline_queue"
   };
 
-  // ---------- Helpers ----------
+  // ========== Helpers ==========
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
   function uid() {
-    // stable-enough local unique id
     return "id_" + Math.random().toString(36).slice(2) + "_" + Date.now().toString(36);
   }
 
@@ -32,7 +40,6 @@
   }
 
   function formatUKDate(d) {
-    // Expects Date
     return d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   }
 
@@ -87,11 +94,131 @@
     return s;
   }
 
-  // ---------- State ----------
-  let names = loadJSON(KEYS.names, []);     // [{id, name}]
-  let entries = loadJSON(KEYS.entries, []); // [{id, dateISO, dayName, personId, personName, selection, timestampISO}]
+  function debounce(fn, ms) {
+    let timer;
+    return function (...args) {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn.apply(this, args), ms);
+    };
+  }
 
-  // ---------- Elements ----------
+  // Safe cell helper (prevents XSS — uses textContent, not innerHTML)
+  function td(text, className) {
+    const el = document.createElement("td");
+    el.textContent = text;
+    if (className) el.className = className;
+    return el;
+  }
+
+  function actionsTd(entryId) {
+    const cell = document.createElement("td");
+    cell.className = "right";
+
+    const wrap = document.createElement("div");
+    wrap.className = "row-actions";
+
+    const editBtn = document.createElement("button");
+    editBtn.className = "small-btn";
+    editBtn.textContent = "Edit";
+    editBtn.type = "button";
+    editBtn.dataset.action = "edit";
+    editBtn.dataset.id = entryId;
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "small-btn danger";
+    delBtn.textContent = "Delete";
+    delBtn.type = "button";
+    delBtn.dataset.action = "delete";
+    delBtn.dataset.id = entryId;
+
+    wrap.appendChild(editBtn);
+    wrap.appendChild(delBtn);
+    cell.appendChild(wrap);
+    return cell;
+  }
+
+  // ========== Cloud API ==========
+  function cloudEnabled() {
+    return API_URL.length > 0;
+  }
+
+  // All API calls use GET to avoid the Apps Script POST redirect issue
+  async function api(action, data = {}) {
+    if (!cloudEnabled()) return null;
+    const pin = localStorage.getItem(KEYS.pin) || "";
+    const params = new URLSearchParams({ action, pin, data: JSON.stringify(data) });
+    try {
+      const res = await fetch(`${API_URL}?${params}`);
+      return await res.json();
+    } catch {
+      return { error: "offline" };
+    }
+  }
+
+  // Alias kept for clarity at call sites
+  async function apiGet(action) {
+    return api(action);
+  }
+
+  // Fire-and-forget cloud write; queues if offline
+  function cloudSave(action, data) {
+    if (!cloudEnabled()) return;
+    api(action, data).then((result) => {
+      if (result && result.error === "offline") {
+        const q = loadJSON(KEYS.queue, []);
+        q.push({ action, ...data });
+        saveJSON(KEYS.queue, q);
+        updateSyncIndicator();
+      }
+    });
+  }
+
+  async function processQueue() {
+    if (!cloudEnabled()) return;
+    const q = loadJSON(KEYS.queue, []);
+    if (q.length === 0) return;
+
+    const result = await api("sync", { operations: q });
+    if (result && result.ok) {
+      saveJSON(KEYS.queue, []);
+      updateSyncIndicator();
+      showStatus(`Synced ${q.length} offline change(s).`, "good");
+    }
+  }
+
+  async function refreshFromCloud() {
+    const result = await apiGet("getAll");
+    if (result && result.ok) {
+      names = result.names || [];
+      entries = result.entries || [];
+      persistNamesLocal();
+      persistEntriesLocal();
+      renderNameSelect();
+      renderTables();
+      updateCounts();
+    }
+    return result;
+  }
+
+  function updateSyncIndicator() {
+    const el = $("#syncPill");
+    if (!el) return;
+    const q = loadJSON(KEYS.queue, []);
+    if (q.length > 0) {
+      el.textContent = `${q.length} pending`;
+      el.classList.add("pending");
+      el.classList.remove("hidden");
+    } else {
+      el.classList.add("hidden");
+      el.classList.remove("pending");
+    }
+  }
+
+  // ========== State ==========
+  let names = loadJSON(KEYS.names, []);
+  let entries = loadJSON(KEYS.entries, []);
+
+  // ========== Elements ==========
   const todayDisplay = $("#todayDisplay");
   const nameSelect = $("#nameSelect");
   const saveBtn = $("#saveBtn");
@@ -134,7 +261,13 @@
   const confirmOkBtn = $("#confirmOkBtn");
   let confirmResolver = null;
 
-  // ---------- Modal helpers ----------
+  // PIN elements
+  const pinOverlay = $("#pinOverlay");
+  const pinInput = $("#pinInput");
+  const pinSubmitBtn = $("#pinSubmitBtn");
+  const pinError = $("#pinError");
+
+  // ========== Modal helpers ==========
   function openModal(modalEl, backdropEl) {
     modalEl.classList.remove("hidden");
     backdropEl.classList.remove("hidden");
@@ -152,7 +285,6 @@
   function confirmDialog(message) {
     confirmMessage.textContent = message;
     openModal(confirmModal, confirmBackdrop);
-
     return new Promise((resolve) => {
       confirmResolver = resolve;
     });
@@ -166,16 +298,16 @@
     }
   }
 
-  // ---------- Names ----------
+  // ========== Names ==========
   function sortNames() {
     names.sort((a, b) => a.name.localeCompare(b.name, "en-GB", { sensitivity: "base" }));
   }
 
-  function persistNames() {
+  function persistNamesLocal() {
     saveJSON(KEYS.names, names);
   }
 
-  function persistEntries() {
+  function persistEntriesLocal() {
     saveJSON(KEYS.entries, entries);
   }
 
@@ -191,18 +323,15 @@
       nameSelect.appendChild(opt);
     }
 
-    // Try keep selection
-    if (current && names.some(n => n.id === current)) {
+    if (current && names.some((n) => n.id === current)) {
       nameSelect.value = current;
     }
-  
 
-    // Keep styling + hint consistent after re-render
     nameSelect.dispatchEvent(new Event("change"));
-}
+  }
 
   function renderNamesList() {
-    sortNames();
+    // Names already sorted by renderNameSelect; no need to re-sort
     namesList.innerHTML = "";
     if (names.length === 0) {
       const empty = document.createElement("div");
@@ -236,24 +365,24 @@
       del.textContent = "Delete";
       del.type = "button";
 
-      save.addEventListener("click", async () => {
+      save.addEventListener("click", () => {
         const newVal = safeTrim(editInput.value);
         if (!newVal) return showStatus("Name cannot be blank.", "bad");
 
-        // prevent duplicates (case-insensitive)
-        const exists = names.some(x => x.id !== n.id && x.name.toLowerCase() === newVal.toLowerCase());
+        const exists = names.some((x) => x.id !== n.id && x.name.toLowerCase() === newVal.toLowerCase());
         if (exists) return showStatus("That name already exists.", "warn");
 
         const oldName = n.name;
         n.name = newVal;
 
-        // Update entries to keep name snapshot aligned (optional)
         for (const e of entries) {
           if (e.personId === n.id) e.personName = newVal;
         }
 
-        persistNames();
-        persistEntries();
+        persistNamesLocal();
+        persistEntriesLocal();
+        cloudSave("editName", { nameId: n.id, newName: newVal });
+
         renderNameSelect();
         renderNamesList();
         renderTables();
@@ -265,8 +394,10 @@
         const ok = await confirmDialog(`Delete "${n.name}"? This does not delete their past entries.`);
         if (!ok) return;
 
-        names = names.filter(x => x.id !== n.id);
-        persistNames();
+        names = names.filter((x) => x.id !== n.id);
+        persistNamesLocal();
+        cloudSave("deleteName", { nameId: n.id });
+
         renderNameSelect();
         renderNamesList();
         updateCounts();
@@ -285,11 +416,13 @@
     const val = safeTrim(newNameInput.value);
     if (!val) return showStatus("Please enter a name.", "warn");
 
-    const exists = names.some(n => n.name.toLowerCase() === val.toLowerCase());
+    const exists = names.some((n) => n.name.toLowerCase() === val.toLowerCase());
     if (exists) return showStatus("That name already exists.", "warn");
 
-    names.push({ id: uid(), name: val });
-    persistNames();
+    const nameObj = { id: uid(), name: val };
+    names.push(nameObj);
+    persistNamesLocal();
+    cloudSave("addName", { name: nameObj });
 
     newNameInput.value = "";
     renderNameSelect();
@@ -298,23 +431,23 @@
     showStatus(`Added "${val}".`, "good");
   }
 
-  // ---------- Entries ----------
+  // ========== Entries ==========
   function getSelectedMealType() {
     const el = document.querySelector('input[name="mealType"]:checked');
     return el ? el.value : "";
   }
 
   function clearMealSelection() {
-    $$('input[name="mealType"]').forEach(r => r.checked = false);
+    $$('input[name="mealType"]').forEach((r) => (r.checked = false));
   }
 
   function entryExistsForPersonOnDate(personId, dateISO) {
-    return entries.some(e => e.personId === personId && e.dateISO === dateISO);
+    return entries.some((e) => e.personId === personId && e.dateISO === dateISO);
   }
 
   async function saveEntry() {
     const personId = nameSelect.value;
-    const person = names.find(n => n.id === personId);
+    const person = names.find((n) => n.id === personId);
     const selection = getSelectedMealType();
 
     if (!personId || !person) return showStatus("Please select a name.", "warn");
@@ -329,7 +462,7 @@
       if (!ok) return showStatus("No changes made.", "");
     }
 
-    entries.push({
+    const entry = {
       id: uid(),
       dateISO,
       dayName: day,
@@ -337,60 +470,63 @@
       personName: person.name,
       selection,
       timestampISO: now.toISOString()
-    });
+    };
 
-    persistEntries();
+    entries.push(entry);
+    persistEntriesLocal();
+    cloudSave("addEntry", { entry });
+
     renderTables();
     updateCounts();
     showStatus(`Saved: ${person.name} — ${selection}`, "good");
   }
 
   function deleteEntry(entryId) {
-    entries = entries.filter(e => e.id !== entryId);
-    persistEntries();
+    entries = entries.filter((e) => e.id !== entryId);
+    persistEntriesLocal();
+    cloudSave("deleteEntry", { entryId });
+
     renderTables();
     updateCounts();
     showStatus("Entry deleted.", "good");
   }
 
   async function editEntry(entryId) {
-    const entry = entries.find(e => e.id === entryId);
+    const entry = entries.find((e) => e.id === entryId);
     if (!entry) return;
 
-    // Simple prompt-based edit to keep UI minimal
-    const mealOptions = ["Starter", "Main course", "Dessert", "Starter + main course", "Main course + dessert", "Starter + dessert", "2 starters"];
+    const mealOptions = [
+      "Starter", "Main course", "Dessert",
+      "Starter + main course", "Main course + dessert",
+      "Starter + dessert", "2 starters"
+    ];
     const currentIdx = mealOptions.indexOf(entry.selection);
     const promptText =
-      `Edit selection for ${entry.personName} on ${entry.dateISO}
-` +
-      `1) Starter
-2) Main course
-3) Dessert
-4) Starter + main course
-5) Main course + dessert
-6) Starter + dessert
-7) 2 starters
-
-` +
+      `Edit selection for ${entry.personName} on ${entry.dateISO}\n` +
+      `1) Starter\n2) Main course\n3) Dessert\n` +
+      `4) Starter + main course\n5) Main course + dessert\n` +
+      `6) Starter + dessert\n7) 2 starters\n\n` +
       `Enter 1–7 (current: ${currentIdx >= 0 ? currentIdx + 1 : entry.selection})`;
 
     const ans = window.prompt(promptText, currentIdx >= 0 ? String(currentIdx + 1) : "");
-    if (ans === null) return; // cancelled
+    if (ans === null) return;
     const n = parseInt(ans, 10);
-    if (![1,2,3,4,5,6,7].includes(n)) return showStatus("Edit cancelled: invalid option.", "warn");
+    if (![1, 2, 3, 4, 5, 6, 7].includes(n)) return showStatus("Edit cancelled: invalid option.", "warn");
 
-    entry.selection = mealOptions[n-1];
-    persistEntries();
+    const newSelection = mealOptions[n - 1];
+    entry.selection = newSelection;
+    persistEntriesLocal();
+    cloudSave("editEntry", { entryId, selection: newSelection });
+
     renderTables();
     showStatus("Entry updated.", "good");
   }
 
-  function withinRange(dateISO, rangeValue) {
+  function withinRange(dateISO, rangeValue, todayMs) {
     if (rangeValue === "all") return true;
 
-    const today = new Date();
-    const target = new Date(dateISO + "T00:00:00");
-    const diffDays = Math.floor((today.setHours(0,0,0,0) - target.getTime()) / (1000 * 60 * 60 * 24));
+    const targetMs = new Date(dateISO + "T00:00:00").getTime();
+    const diffDays = Math.floor((todayMs - targetMs) / 86400000);
 
     if (rangeValue === "today") return diffDays === 0;
     const days = parseInt(rangeValue, 10);
@@ -401,56 +537,52 @@
   function renderTables() {
     const today = todayISODate();
     const todays = entries
-      .filter(e => e.dateISO === today)
+      .filter((e) => e.dateISO === today)
       .sort((a, b) => (a.timestampISO < b.timestampISO ? -1 : 1));
 
+    // Today table — safe DOM construction (no innerHTML for user data)
     todayTbody.innerHTML = "";
+    const todayFrag = document.createDocumentFragment();
     for (const e of todays) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${e.personName}</td>
-        <td>${e.selection}</td>
-        <td>${formatTimeHHMM(new Date(e.timestampISO))}</td>
-        <td class="right">
-          <div class="row-actions">
-            <button class="small-btn" data-action="edit" data-id="${e.id}" type="button">Edit</button>
-            <button class="small-btn danger" data-action="delete" data-id="${e.id}" type="button">Delete</button>
-          </div>
-        </td>
-      `;
-      todayTbody.appendChild(tr);
+      tr.appendChild(td(e.personName));
+      tr.appendChild(td(e.selection));
+      tr.appendChild(td(formatTimeHHMM(new Date(e.timestampISO))));
+      tr.appendChild(actionsTd(e.id));
+      todayFrag.appendChild(tr);
     }
-
+    todayTbody.appendChild(todayFrag);
     todayEmpty.style.display = todays.length ? "none" : "block";
 
-    // All view
+    // All-entries table
     const rangeVal = rangeSelect.value;
     const q = safeTrim(searchInput.value).toLowerCase();
 
+    // Compute today's midnight once (fix: avoid per-row Date creation)
+    const todayMs = new Date().setHours(0, 0, 0, 0);
+
     const filtered = entries
-      .filter(e => withinRange(e.dateISO, rangeVal))
-      .filter(e => !q || e.personName.toLowerCase().includes(q))
-      .sort((a, b) => (a.dateISO === b.dateISO ? (a.timestampISO < b.timestampISO ? -1 : 1) : (a.dateISO < b.dateISO ? 1 : -1)));
+      .filter((e) => withinRange(e.dateISO, rangeVal, todayMs))
+      .filter((e) => !q || e.personName.toLowerCase().includes(q))
+      .sort((a, b) =>
+        a.dateISO === b.dateISO
+          ? (a.timestampISO < b.timestampISO ? -1 : 1)
+          : (a.dateISO < b.dateISO ? 1 : -1)
+      );
 
     allTbody.innerHTML = "";
+    const allFrag = document.createDocumentFragment();
     for (const e of filtered) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${e.dateISO}</td>
-        <td>${e.dayName}</td>
-        <td>${e.personName}</td>
-        <td>${e.selection}</td>
-        <td>${formatTimeHHMM(new Date(e.timestampISO))}</td>
-        <td class="right">
-          <div class="row-actions">
-            <button class="small-btn" data-action="edit" data-id="${e.id}" type="button">Edit</button>
-            <button class="small-btn danger" data-action="delete" data-id="${e.id}" type="button">Delete</button>
-          </div>
-        </td>
-      `;
-      allTbody.appendChild(tr);
+      tr.appendChild(td(e.dateISO));
+      tr.appendChild(td(e.dayName));
+      tr.appendChild(td(e.personName));
+      tr.appendChild(td(e.selection));
+      tr.appendChild(td(formatTimeHHMM(new Date(e.timestampISO))));
+      tr.appendChild(actionsTd(e.id));
+      allFrag.appendChild(tr);
     }
-
+    allTbody.appendChild(allFrag);
     allEmpty.style.display = filtered.length ? "none" : "block";
   }
 
@@ -463,7 +595,7 @@
     const action = btn.getAttribute("data-action");
 
     if (action === "delete") {
-      confirmDialog("Delete this entry?").then(ok => {
+      confirmDialog("Delete this entry?").then((ok) => {
         if (ok) deleteEntry(id);
         else showStatus("No changes made.", "");
       });
@@ -472,7 +604,7 @@
     }
   }
 
-  // ---------- Export ----------
+  // ========== Export ==========
   function exportCSV() {
     if (entries.length === 0) return showStatus("No entries to export yet.", "warn");
 
@@ -486,12 +618,11 @@
     }
 
     const csv = lines.join("\r\n");
-    const stamp = todayISODate();
-    downloadTextFile(`lunch-tracker_${stamp}.csv`, csv, "text/csv;charset=utf-8");
+    downloadTextFile(`lunch-tracker_${todayISODate()}.csv`, csv, "text/csv;charset=utf-8");
     showStatus("Exported CSV.", "good");
   }
 
-  // ---------- Tabs ----------
+  // ========== Tabs ==========
   function setTab(which) {
     if (which === "today") {
       tabToday.classList.add("active");
@@ -506,34 +637,77 @@
     }
   }
 
-  // ---------- Counts ----------
+  // ========== Counts ==========
   function updateCounts() {
     namesCountPill.textContent = `${names.length} name${names.length === 1 ? "" : "s"}`;
     entriesCountPill.textContent = `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`;
+    updateSyncIndicator();
   }
 
-  // ---------- Wipe ----------
+  // ========== Wipe ==========
   async function wipeAll() {
-    const ok = await confirmDialog("Wipe ALL local data (names + entries) from this device?");
+    const ok = await confirmDialog("Wipe ALL data (names + entries)? This affects everyone.");
     if (!ok) return;
 
     names = [];
     entries = [];
-    persistNames();
-    persistEntries();
+    persistNamesLocal();
+    persistEntriesLocal();
+    cloudSave("wipe", {});
+
     renderNameSelect();
     renderNamesList();
     renderTables();
     updateCounts();
     clearMealSelection();
     nameSelect.value = "";
-    showStatus("Local data wiped.", "good");
+    showStatus("All data wiped.", "good");
   }
 
-  // ---------- Init ----------
+  // ========== PIN Auth ==========
+  async function verifyPin(pin) {
+    if (!cloudEnabled()) return true;
+
+    const encoded = encodeURIComponent(pin);
+    try {
+      const res = await fetch(`${API_URL}?action=verify&pin=${encoded}`);
+      const data = await res.json();
+      return data.ok === true;
+    } catch {
+      // If offline, accept a previously-stored PIN
+      const stored = localStorage.getItem(KEYS.pin);
+      return stored && stored === pin;
+    }
+  }
+
+  async function handlePinSubmit() {
+    const pin = safeTrim(pinInput.value);
+    if (!pin) {
+      pinError.textContent = "Please enter a PIN.";
+      return;
+    }
+
+    pinSubmitBtn.disabled = true;
+    pinSubmitBtn.textContent = "Checking…";
+    pinError.textContent = "";
+
+    const valid = await verifyPin(pin);
+
+    if (valid) {
+      localStorage.setItem(KEYS.pin, pin);
+      pinOverlay.classList.add("hidden");
+      await startApp();
+    } else {
+      pinError.textContent = "Invalid PIN. Try again.";
+    }
+
+    pinSubmitBtn.disabled = false;
+    pinSubmitBtn.textContent = "Enter";
+  }
+
+  // ========== Init ==========
   function initDateHeader() {
-    const now = new Date();
-    todayDisplay.textContent = formatUKDate(now);
+    todayDisplay.textContent = formatUKDate(new Date());
   }
 
   function initEvents() {
@@ -545,37 +719,37 @@
 
     exportBtn.addEventListener("click", exportCSV);
 
-    
-
-    // Name select: clearer selected state + coloured select once chosen
     nameSelect.addEventListener("change", () => {
       const personId = nameSelect.value;
-      const person = names.find(n => n.id === personId);
+      const person = names.find((n) => n.id === personId);
 
-      // Toggle colour when a real name is selected
       nameSelect.classList.toggle("has-value", !!person);
 
-      // Make it clearer what is selected
       const hint = $("#nameHint");
       if (person) {
-        hint.innerHTML = `Selected: <strong>${person.name}</strong>`;
+        hint.innerHTML = "";
+        const strong = document.createElement("strong");
+        strong.textContent = person.name;
+        hint.textContent = "Selected: ";
+        hint.appendChild(strong);
       } else {
-        hint.textContent = 'Tip: use “Manage Names” to add people.';
+        hint.textContent = 'Tip: use "Manage Names" to add people.';
       }
     });
-// Tabs
+
+    // Tabs
     tabToday.addEventListener("click", () => setTab("today"));
     tabAll.addEventListener("click", () => setTab("all"));
 
-    // All filters
+    // All filters (debounced search)
     rangeSelect.addEventListener("change", renderTables);
-    searchInput.addEventListener("input", renderTables);
+    searchInput.addEventListener("input", debounce(renderTables, 250));
 
     // Table actions
     todayTbody.addEventListener("click", handleTableClick);
     allTbody.addEventListener("click", handleTableClick);
 
-    // Names modal open/close
+    // Names modal
     manageNamesBtn.addEventListener("click", () => {
       openModal(namesModal, namesModalBackdrop);
       newNameInput.focus();
@@ -590,13 +764,12 @@
     closeNamesModalBtn2.addEventListener("click", closeNames);
     namesModalBackdrop.addEventListener("click", closeNames);
 
-    // Add name
     addNameBtn.addEventListener("click", addName);
     newNameInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") addName();
     });
 
-    // Confirm modal close handlers
+    // Confirm modal
     confirmOkBtn.addEventListener("click", () => closeConfirm(true));
     confirmCancelBtn.addEventListener("click", () => closeConfirm(false));
     confirmCloseBtn.addEventListener("click", () => closeConfirm(false));
@@ -605,24 +778,76 @@
     // Wipe
     wipeDataBtn.addEventListener("click", wipeAll);
 
-    // Keyboard escape closes modals
+    // Escape key
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
       if (!namesModal.classList.contains("hidden")) closeModal(namesModal, namesModalBackdrop);
       if (!confirmModal.classList.contains("hidden")) closeConfirm(false);
     });
+
+    // PIN
+    if (pinSubmitBtn) {
+      pinSubmitBtn.addEventListener("click", handlePinSubmit);
+      pinInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") handlePinSubmit();
+      });
+    }
+
+    // Online/offline
+    window.addEventListener("online", () => {
+      processQueue();
+      refreshFromCloud();
+    });
   }
 
-  function initPWA() { /* service worker disabled for reliability */ }
+  async function startApp() {
+    // Try to load from cloud first
+    if (cloudEnabled()) {
+      showStatus("Syncing with Google Sheets…", "");
+      const result = await refreshFromCloud();
+      if (result && result.ok) {
+        showStatus("Synced.", "good");
+      } else if (result && result.error === "Invalid PIN") {
+        // PIN expired or changed — re-prompt
+        localStorage.removeItem(KEYS.pin);
+        pinOverlay.classList.remove("hidden");
+        pinError.textContent = "PIN no longer valid. Please re-enter.";
+        return;
+      } else {
+        showStatus("Offline — using cached data.", "warn");
+      }
+      // Process any queued offline changes
+      await processQueue();
+    } else {
+      showStatus("Local-only mode (no API URL configured).", "");
+    }
 
-function bootstrap() {
-    initDateHeader();
-    initEvents();
     renderNameSelect();
     renderTables();
     updateCounts();
-    showStatus("Ready.", "");
-    initPWA();
+  }
+
+  async function bootstrap() {
+    initDateHeader();
+    initEvents();
+
+    if (cloudEnabled()) {
+      const storedPin = localStorage.getItem(KEYS.pin);
+      if (storedPin) {
+        pinOverlay.classList.add("hidden");
+        await startApp();
+      } else {
+        // Show PIN screen
+        pinOverlay.classList.remove("hidden");
+      }
+    } else {
+      // Local-only mode — hide PIN, go straight to app
+      if (pinOverlay) pinOverlay.classList.add("hidden");
+      renderNameSelect();
+      renderTables();
+      updateCounts();
+      showStatus("Ready (local-only mode).", "");
+    }
   }
 
   bootstrap();
