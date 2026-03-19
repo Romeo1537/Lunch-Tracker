@@ -6,13 +6,14 @@
   <title>Lunch Tracker</title>
   <link rel="icon" href="favicon.ico" />
   <meta name="theme-color" content="#111827" />
-  <meta name="description" content="iPad-friendly lunch logging with cloud sync." />
+  <meta name="description" content="Local-only iPad-friendly lunch logging with editable names and CSV export." />
+
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 
 <body>
-  <!-- PIN Overlay -->
+  <!-- PIN Overlay (shown when cloud is enabled and no PIN stored) -->
   <div id="pinOverlay" class="pin-overlay hidden">
     <div class="pin-card">
       <div class="pin-logo">LT</div>
@@ -40,24 +41,52 @@
       <h2>Log a lunch</h2>
 
       <div class="grid">
-        <div class="field">
-          <label for="nameSelect">Name</label>
-          <select id="nameSelect" class="select" required>
-            <option value="" selected disabled>Select a name…</option>
-          </select>
-          <div class="hint" id="nameHint">Tip: use "Manage Names" to add people.</div>
+        <div class=”field”>
+          <label>Name</label>
+          <div class=”name-picker” id=”namePicker”>
+            <div class=”name-picker-row”>
+              <input id=”initialsInput” class=”input” type=”text” placeholder=”Type initials…” autocomplete=”off” autocapitalize=”characters” />
+              <select id=”companyFilter” class=”select company-filter-select”>
+                <option value=””>All companies</option>
+              </select>
+            </div>
+            <div class=”name-picker-results hidden” id=”namePickerResults”></div>
+            <input type=”hidden” id=”nameSelectHidden” />
+          </div>
+          <div class=”hint” id=”nameHint”>Type initials (e.g. “RL”) to find a name.</div>
         </div>
 
         <div class="field">
           <label>Meal choice</label>
-          <div class="segmented segmented-7" role="radiogroup" aria-label="Meal choice">
-            <label class="seg"><input type="radio" name="mealType" value="Starter" /><span>Starter</span></label>
-            <label class="seg"><input type="radio" name="mealType" value="Main course" /><span>Main course</span></label>
-            <label class="seg"><input type="radio" name="mealType" value="Dessert" /><span>Dessert</span></label>
-            <label class="seg"><input type="radio" name="mealType" value="Starter + main course" /><span>Starter + main course</span></label>
-            <label class="seg"><input type="radio" name="mealType" value="Main course + dessert" /><span>Main course + dessert</span></label>
-            <label class="seg"><input type="radio" name="mealType" value="Starter + dessert" /><span>Starter + dessert</span></label>
-            <label class="seg"><input type="radio" name="mealType" value="2 starters" /><span>2 starters</span></label>
+                              <div class="segmented segmented-7" role="radiogroup" aria-label="Meal choice">
+            <label class="seg">
+              <input type="radio" name="mealType" value="Starter" />
+              <span>Starter</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="mealType" value="Main course" />
+              <span>Main course</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="mealType" value="Dessert" />
+              <span>Dessert</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="mealType" value="Starter + main course" />
+              <span>Starter + main course</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="mealType" value="Main course + dessert" />
+              <span>Main course + dessert</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="mealType" value="Starter + dessert" />
+              <span>Starter + dessert</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="mealType" value="2 starters" />
+              <span>2 starters</span>
+            </label>
           </div>
         </div>
       </div>
@@ -79,7 +108,15 @@
       <div id="todayView">
         <div class="table-wrap">
           <table class="table" aria-label="Today's entries">
-            <thead><tr><th>Name</th><th>Selection</th><th>Time</th><th class="right">Actions</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Company</th>
+                <th>Selection</th>
+                <th>Time</th>
+                <th class="right">Actions</th>
+              </tr>
+            </thead>
             <tbody id="todayTbody"></tbody>
           </table>
         </div>
@@ -97,6 +134,7 @@
               <option value="all">All time</option>
             </select>
           </div>
+
           <div class="field">
             <label for="searchInput">Search name</label>
             <input id="searchInput" class="input" type="text" placeholder="Type a name…" />
@@ -105,7 +143,17 @@
 
         <div class="table-wrap">
           <table class="table" aria-label="All entries">
-            <thead><tr><th>Date</th><th>Day</th><th>Name</th><th>Selection</th><th>Time</th><th class="right">Actions</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Day</th>
+                <th>Name</th>
+                <th>Company</th>
+                <th>Selection</th>
+                <th>Time</th>
+                <th class="right">Actions</th>
+              </tr>
+            </thead>
             <tbody id="allTbody"></tbody>
           </table>
         </div>
@@ -120,7 +168,7 @@
         <span class="pill pending hidden" id="syncPill">0 pending</span>
       </div>
       <div class="footer-right">
-        <button class="btn danger subtle" id="wipeDataBtn" type="button">Wipe local data</button>
+        <button class="btn danger subtle" id="wipeDataBtn" type="button" title="Deletes names and entries from this device only.">Wipe local data</button>
       </div>
     </footer>
   </main>
@@ -132,14 +180,26 @@
       <h3 id="namesModalTitle">Manage Names</h3>
       <button class="icon-btn" id="closeNamesModalBtn" type="button" aria-label="Close">✕</button>
     </div>
-    <div class="modal-body">
-      <div class="row">
-        <input id="newNameInput" class="input" type="text" placeholder="Add a name…" />
-        <button class="btn primary" id="addNameBtn" type="button">Add</button>
+
+    <div class="modal-body modal-body-names">
+      <div class="names-modal-fixed">
+        <div class="row">
+          <input id="newNameInput" class="input" type="text" placeholder="Name…" />
+          <input id="newCompanyInput" class="input" type="text" placeholder="Company…" />
+          <button class="btn primary" id="addNameBtn" type="button">Add</button>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <input id="namesSearchInput" class="input" type="text" placeholder="Search names…" />
+        </div>
       </div>
-      <div class="list" id="namesList" aria-label="Names list"></div>
-      <div class="hint">Names are stored on this device and synced to Google Sheets.</div>
+
+      <div class="list names-scroll" id="namesList" aria-label="Names list"></div>
+
+      <div class="hint">
+        Names are synced to Google Sheets when online.
+      </div>
     </div>
+
     <div class="modal-footer">
       <button class="btn secondary" id="closeNamesModalBtn2" type="button">Done</button>
     </div>

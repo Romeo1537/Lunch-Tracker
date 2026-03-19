@@ -27,6 +27,7 @@ self.addEventListener("fetch", (event) => {
     caches.match(req).then((cached) => {
       if (cached) return cached;
       return fetch(req).then((resp) => {
+        // cache new GET requests
         if (req.method === "GET" && resp && resp.status === 200) {
           const clone = resp.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));

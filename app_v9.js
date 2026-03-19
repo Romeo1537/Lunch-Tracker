@@ -1,5 +1,9 @@
-/* Lunch Tracker v10 — Cloud-synced via Google Sheets
-   - Names & entries sync to Google Sheets (via Apps Script)
+/* Lunch Tracker v11 — Company field + initials-based name picker
+   - Names now have a "company" field (free text)
+   - Entries store company at time of logging
+   - Name selection via initials search + company filter
+   - Manage Names modal: scrollable list with search
+   - Cloud sync to Google Sheets (via Apps Script)
    - Falls back to localStorage when offline
    - Offline queue replays when connection returns
    - Simple shared PIN authentication
@@ -10,8 +14,6 @@
   "use strict";
 
   // ========== CONFIGURATION ==========
-  // Paste your Google Apps Script web-app URL here.
-  // Leave empty ("") to run in local-only mode (no cloud sync).
   const API_URL = "https://script.google.com/macros/s/AKfycbxzOg_kepcr7qaiEdSRrH1a2Vt-YAjlr5R5PNMe56AgfZuJiut3PEb1sGrIg54m97a5DA/exec";
 
   // ========== Storage keys ==========
@@ -102,7 +104,6 @@
     };
   }
 
-  // Safe cell helper (prevents XSS — uses textContent, not innerHTML)
   function td(text, className) {
     const el = document.createElement("td");
     el.textContent = text;
@@ -113,7 +114,6 @@
   function actionsTd(entryId) {
     const cell = document.createElement("td");
     cell.className = "right";
-
     const wrap = document.createElement("div");
     wrap.className = "row-actions";
 
@@ -137,12 +137,20 @@
     return cell;
   }
 
+  // Extract initials from a full name: "Romeo Lam" → "RL"
+  function getInitials(name) {
+    return name
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w[0].toUpperCase())
+      .join("");
+  }
+
   // ========== Cloud API ==========
   function cloudEnabled() {
     return API_URL.length > 0;
   }
 
-  // All API calls use GET to avoid the Apps Script POST redirect issue
   async function api(action, data = {}) {
     if (!cloudEnabled()) return null;
     const pin = localStorage.getItem(KEYS.pin) || "";
@@ -155,12 +163,10 @@
     }
   }
 
-  // Alias kept for clarity at call sites
   async function apiGet(action) {
     return api(action);
   }
 
-  // Fire-and-forget cloud write; queues if offline
   function cloudSave(action, data) {
     if (!cloudEnabled()) return;
     api(action, data).then((result) => {
@@ -172,7 +178,6 @@
           saveJSON(KEYS.queue, q);
           updateSyncIndicator();
         } else {
-          // Show visible error so sync failures aren't silent
           showStatus(`Cloud error (${action}): ${errMsg}`, "bad");
           console.error("cloudSave error:", action, errMsg, data);
         }
@@ -184,7 +189,6 @@
     if (!cloudEnabled()) return;
     const q = loadJSON(KEYS.queue, []);
     if (q.length === 0) return;
-
     const result = await api("sync", { operations: q });
     if (result && result.ok) {
       saveJSON(KEYS.queue, []);
@@ -200,7 +204,7 @@
       entries = result.entries || [];
       persistNamesLocal();
       persistEntriesLocal();
-      renderNameSelect();
+      renderCompanyFilter();
       renderTables();
       updateCounts();
     }
@@ -224,10 +228,11 @@
   // ========== State ==========
   let names = loadJSON(KEYS.names, []);
   let entries = loadJSON(KEYS.entries, []);
+  let selectedPersonId = "";
+  let highlightedIndex = -1;
 
   // ========== Elements ==========
   const todayDisplay = $("#todayDisplay");
-  const nameSelect = $("#nameSelect");
   const saveBtn = $("#saveBtn");
   const clearSelectionBtn = $("#clearSelectionBtn");
   const exportBtn = $("#exportBtn");
@@ -250,12 +255,21 @@
   const entriesCountPill = $("#entriesCountPill");
   const wipeDataBtn = $("#wipeDataBtn");
 
+  // Name picker elements
+  const initialsInput = $("#initialsInput");
+  const companyFilter = $("#companyFilter");
+  const namePickerResults = $("#namePickerResults");
+  const nameSelectHidden = $("#nameSelectHidden");
+  const nameHint = $("#nameHint");
+
   // Names modal
   const namesModal = $("#namesModal");
   const namesModalBackdrop = $("#namesModalBackdrop");
   const closeNamesModalBtn = $("#closeNamesModalBtn");
   const closeNamesModalBtn2 = $("#closeNamesModalBtn2");
   const newNameInput = $("#newNameInput");
+  const newCompanyInput = $("#newCompanyInput");
+  const namesSearchInput = $("#namesSearchInput");
   const addNameBtn = $("#addNameBtn");
   const namesList = $("#namesList");
 
@@ -305,6 +319,156 @@
     }
   }
 
+  // ========== Name Picker (initials-based) ==========
+
+  function renderCompanyFilter() {
+    const companies = [...new Set(names.map((n) => n.company || "").filter(Boolean))].sort(
+      (a, b) => a.localeCompare(b, "en-GB", { sensitivity: "base" })
+    );
+    const current = companyFilter.value;
+    companyFilter.innerHTML = '<option value="">All companies</option>';
+    for (const c of companies) {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      companyFilter.appendChild(opt);
+    }
+    if (current && companies.includes(current)) {
+      companyFilter.value = current;
+    }
+  }
+
+  function getFilteredNames() {
+    const query = safeTrim(initialsInput.value).toUpperCase();
+    const company = companyFilter.value;
+
+    let filtered = names.slice();
+
+    if (company) {
+      filtered = filtered.filter((n) => (n.company || "") === company);
+    }
+
+    if (query) {
+      filtered = filtered.filter((n) => {
+        const initials = getInitials(n.name);
+        return initials.startsWith(query);
+      });
+    }
+
+    filtered.sort((a, b) => a.name.localeCompare(b.name, "en-GB", { sensitivity: "base" }));
+    return filtered;
+  }
+
+  function renderNamePickerResults() {
+    const query = safeTrim(initialsInput.value);
+    const filtered = getFilteredNames();
+
+    namePickerResults.innerHTML = "";
+    highlightedIndex = -1;
+
+    if (!query && !companyFilter.value) {
+      namePickerResults.classList.add("hidden");
+      return;
+    }
+
+    if (filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "name-picker-item";
+      empty.style.cursor = "default";
+      empty.style.color = "var(--muted)";
+      empty.textContent = "No matches found.";
+      namePickerResults.appendChild(empty);
+      namePickerResults.classList.remove("hidden");
+      return;
+    }
+
+    for (let i = 0; i < filtered.length; i++) {
+      const n = filtered[i];
+      const item = document.createElement("div");
+      item.className = "name-picker-item";
+      item.dataset.personId = n.id;
+      item.dataset.index = i;
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "npi-name";
+      nameSpan.textContent = n.name;
+
+      const initialsSpan = document.createElement("span");
+      initialsSpan.className = "npi-initials";
+      initialsSpan.textContent = getInitials(n.name);
+
+      const companySpan = document.createElement("span");
+      companySpan.className = "npi-company";
+      companySpan.textContent = n.company || "";
+
+      item.appendChild(nameSpan);
+      item.appendChild(initialsSpan);
+      item.appendChild(companySpan);
+
+      item.addEventListener("click", () => selectPerson(n.id));
+
+      namePickerResults.appendChild(item);
+    }
+
+    namePickerResults.classList.remove("hidden");
+  }
+
+  function selectPerson(personId) {
+    const person = names.find((n) => n.id === personId);
+    if (!person) return;
+
+    selectedPersonId = personId;
+    nameSelectHidden.value = personId;
+
+    // Hide results and clear input
+    namePickerResults.classList.add("hidden");
+    initialsInput.value = "";
+
+    // Show selected badge in hint area
+    nameHint.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "name-picker-selected";
+
+    const badge = document.createElement("span");
+    badge.className = "nps-badge";
+    badge.textContent = person.name;
+    if (person.company) {
+      const compSpan = document.createElement("span");
+      compSpan.className = "nps-company";
+      compSpan.textContent = " — " + person.company;
+      badge.appendChild(compSpan);
+    }
+
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "nps-clear";
+    clearBtn.textContent = "Clear";
+    clearBtn.type = "button";
+    clearBtn.addEventListener("click", clearPersonSelection);
+
+    wrap.appendChild(badge);
+    wrap.appendChild(clearBtn);
+    nameHint.appendChild(wrap);
+  }
+
+  function clearPersonSelection() {
+    selectedPersonId = "";
+    nameSelectHidden.value = "";
+    initialsInput.value = "";
+    nameHint.textContent = 'Type initials (e.g. "RL") to find a name.';
+    namePickerResults.classList.add("hidden");
+    highlightedIndex = -1;
+  }
+
+  function highlightItem(index) {
+    const items = namePickerResults.querySelectorAll(".name-picker-item[data-person-id]");
+    items.forEach((el) => el.classList.remove("highlighted"));
+    if (index >= 0 && index < items.length) {
+      highlightedIndex = index;
+      items[index].classList.add("highlighted");
+      items[index].scrollIntoView({ block: "nearest" });
+    }
+  }
+
   // ========== Names ==========
   function sortNames() {
     names.sort((a, b) => a.name.localeCompare(b.name, "en-GB", { sensitivity: "base" }));
@@ -318,53 +482,36 @@
     saveJSON(KEYS.entries, entries);
   }
 
-  function renderNameSelect() {
-    const current = nameSelect.value;
-    nameSelect.innerHTML = '<option value="">Select a name…</option>';
-
+  function renderNamesList(filter) {
     sortNames();
-    for (const n of names) {
-      const opt = document.createElement("option");
-      opt.value = n.id;
-      opt.textContent = n.name;
-      nameSelect.appendChild(opt);
-    }
-
-    if (current && names.some((n) => n.id === current)) {
-      nameSelect.value = current;
-    }
-
-    nameSelect.dispatchEvent(new Event("change"));
-  }
-
-  function renderNamesList() {
-    // Names already sorted by renderNameSelect; no need to re-sort
     namesList.innerHTML = "";
-    if (names.length === 0) {
+
+    const q = (filter || "").toLowerCase();
+    const visible = q ? names.filter((n) => n.name.toLowerCase().includes(q) || (n.company || "").toLowerCase().includes(q)) : names;
+
+    if (visible.length === 0) {
       const empty = document.createElement("div");
       empty.className = "hint";
-      empty.textContent = "No names yet. Add the first one above.";
+      empty.textContent = q ? "No names match your search." : "No names yet. Add the first one above.";
       namesList.appendChild(empty);
       return;
     }
 
-    for (const n of names) {
+    for (const n of visible) {
       const row = document.createElement("div");
       row.className = "name-item";
 
-      const nameSpan = document.createElement("div");
-      nameSpan.className = "name";
-      nameSpan.textContent = n.name;
+      const nameLabel = document.createElement("div");
+      nameLabel.className = "name-label";
+      nameLabel.textContent = n.name;
 
-      const editInput = document.createElement("input");
-      editInput.className = "input edit";
-      editInput.type = "text";
-      editInput.value = n.name;
-      editInput.setAttribute("aria-label", `Edit name ${n.name}`);
+      const companyLabel = document.createElement("div");
+      companyLabel.className = "company-label";
+      companyLabel.textContent = n.company || "—";
 
       const save = document.createElement("button");
       save.className = "small-btn";
-      save.textContent = "Save";
+      save.textContent = "Edit";
       save.type = "button";
 
       const del = document.createElement("button");
@@ -373,28 +520,70 @@
       del.type = "button";
 
       save.addEventListener("click", () => {
-        const newVal = safeTrim(editInput.value);
-        if (!newVal) return showStatus("Name cannot be blank.", "bad");
+        // In-place edit: replace labels with inputs
+        const nameInput = document.createElement("input");
+        nameInput.className = "input";
+        nameInput.type = "text";
+        nameInput.value = n.name;
+        nameInput.style.fontSize = "14px";
 
-        const exists = names.some((x) => x.id !== n.id && x.name.toLowerCase() === newVal.toLowerCase());
-        if (exists) return showStatus("That name already exists.", "warn");
+        const compInput = document.createElement("input");
+        compInput.className = "input";
+        compInput.type = "text";
+        compInput.value = n.company || "";
+        compInput.placeholder = "Company…";
+        compInput.style.fontSize = "14px";
 
-        const oldName = n.name;
-        n.name = newVal;
+        const saveConfirm = document.createElement("button");
+        saveConfirm.className = "small-btn";
+        saveConfirm.textContent = "Save";
+        saveConfirm.type = "button";
+        saveConfirm.style.background = "rgba(16,185,129,.18)";
+        saveConfirm.style.borderColor = "rgba(16,185,129,.5)";
 
-        for (const e of entries) {
-          if (e.personId === n.id) e.personName = newVal;
-        }
+        const cancel = document.createElement("button");
+        cancel.className = "small-btn";
+        cancel.textContent = "Cancel";
+        cancel.type = "button";
 
-        persistNamesLocal();
-        persistEntriesLocal();
-        cloudSave("editName", { nameId: n.id, newName: newVal });
+        row.innerHTML = "";
+        row.appendChild(nameInput);
+        row.appendChild(compInput);
+        row.appendChild(saveConfirm);
+        row.appendChild(cancel);
 
-        renderNameSelect();
-        renderNamesList();
-        renderTables();
-        updateCounts();
-        showStatus(`Updated "${oldName}" to "${newVal}".`, "good");
+        nameInput.focus();
+
+        cancel.addEventListener("click", () => renderNamesList(safeTrim(namesSearchInput.value)));
+
+        saveConfirm.addEventListener("click", () => {
+          const newName = safeTrim(nameInput.value);
+          const newCompany = safeTrim(compInput.value);
+          if (!newName) return showStatus("Name cannot be blank.", "bad");
+
+          const exists = names.some((x) => x.id !== n.id && x.name.toLowerCase() === newName.toLowerCase());
+          if (exists) return showStatus("That name already exists.", "warn");
+
+          n.name = newName;
+          n.company = newCompany;
+
+          for (const e of entries) {
+            if (e.personId === n.id) {
+              e.personName = newName;
+              e.company = newCompany;
+            }
+          }
+
+          persistNamesLocal();
+          persistEntriesLocal();
+          cloudSave("editName", { nameId: n.id, newName, newCompany });
+
+          renderCompanyFilter();
+          renderNamesList(safeTrim(namesSearchInput.value));
+          renderTables();
+          updateCounts();
+          showStatus(`Updated "${newName}".`, "good");
+        });
       });
 
       del.addEventListener("click", async () => {
@@ -405,14 +594,14 @@
         persistNamesLocal();
         cloudSave("deleteName", { nameId: n.id });
 
-        renderNameSelect();
-        renderNamesList();
+        renderCompanyFilter();
+        renderNamesList(safeTrim(namesSearchInput.value));
         updateCounts();
         showStatus(`Deleted "${n.name}".`, "good");
       });
 
-      row.appendChild(nameSpan);
-      row.appendChild(editInput);
+      row.appendChild(nameLabel);
+      row.appendChild(companyLabel);
       row.appendChild(save);
       row.appendChild(del);
       namesList.appendChild(row);
@@ -421,21 +610,23 @@
 
   function addName() {
     const val = safeTrim(newNameInput.value);
+    const company = safeTrim(newCompanyInput.value);
     if (!val) return showStatus("Please enter a name.", "warn");
 
     const exists = names.some((n) => n.name.toLowerCase() === val.toLowerCase());
     if (exists) return showStatus("That name already exists.", "warn");
 
-    const nameObj = { id: uid(), name: val };
+    const nameObj = { id: uid(), name: val, company };
     names.push(nameObj);
     persistNamesLocal();
     cloudSave("addName", { name: nameObj });
 
     newNameInput.value = "";
-    renderNameSelect();
-    renderNamesList();
+    newCompanyInput.value = "";
+    renderCompanyFilter();
+    renderNamesList(safeTrim(namesSearchInput.value));
     updateCounts();
-    showStatus(`Added "${val}".`, "good");
+    showStatus(`Added "${val}"${company ? " (" + company + ")" : ""}.`, "good");
   }
 
   // ========== Entries ==========
@@ -453,7 +644,7 @@
   }
 
   async function saveEntry() {
-    const personId = nameSelect.value;
+    const personId = selectedPersonId;
     const person = names.find((n) => n.id === personId);
     const selection = getSelectedMealType();
 
@@ -475,6 +666,7 @@
       dayName: day,
       personId,
       personName: person.name,
+      company: person.company || "",
       selection,
       timestampISO: now.toISOString()
     };
@@ -492,7 +684,6 @@
     entries = entries.filter((e) => e.id !== entryId);
     persistEntriesLocal();
     cloudSave("deleteEntry", { entryId });
-
     renderTables();
     updateCounts();
     showStatus("Entry deleted.", "good");
@@ -524,17 +715,14 @@
     entry.selection = newSelection;
     persistEntriesLocal();
     cloudSave("editEntry", { entryId, selection: newSelection });
-
     renderTables();
     showStatus("Entry updated.", "good");
   }
 
   function withinRange(dateISO, rangeValue, todayMs) {
     if (rangeValue === "all") return true;
-
     const targetMs = new Date(dateISO + "T00:00:00").getTime();
     const diffDays = Math.floor((todayMs - targetMs) / 86400000);
-
     if (rangeValue === "today") return diffDays === 0;
     const days = parseInt(rangeValue, 10);
     if (!Number.isFinite(days)) return true;
@@ -547,12 +735,12 @@
       .filter((e) => e.dateISO === today)
       .sort((a, b) => (a.timestampISO < b.timestampISO ? -1 : 1));
 
-    // Today table — safe DOM construction (no innerHTML for user data)
     todayTbody.innerHTML = "";
     const todayFrag = document.createDocumentFragment();
     for (const e of todays) {
       const tr = document.createElement("tr");
       tr.appendChild(td(e.personName));
+      tr.appendChild(td(e.company || ""));
       tr.appendChild(td(e.selection));
       tr.appendChild(td(formatTimeHHMM(new Date(e.timestampISO))));
       tr.appendChild(actionsTd(e.id));
@@ -564,8 +752,6 @@
     // All-entries table
     const rangeVal = rangeSelect.value;
     const q = safeTrim(searchInput.value).toLowerCase();
-
-    // Compute today's midnight once (fix: avoid per-row Date creation)
     const todayMs = new Date().setHours(0, 0, 0, 0);
 
     const filtered = entries
@@ -584,6 +770,7 @@
       tr.appendChild(td(e.dateISO));
       tr.appendChild(td(e.dayName));
       tr.appendChild(td(e.personName));
+      tr.appendChild(td(e.company || ""));
       tr.appendChild(td(e.selection));
       tr.appendChild(td(formatTimeHHMM(new Date(e.timestampISO))));
       tr.appendChild(actionsTd(e.id));
@@ -593,14 +780,11 @@
     allEmpty.style.display = filtered.length ? "none" : "block";
   }
 
-  // Delegate table actions
   function handleTableClick(ev) {
     const btn = ev.target.closest("button[data-action]");
     if (!btn) return;
-
     const id = btn.getAttribute("data-id");
     const action = btn.getAttribute("data-action");
-
     if (action === "delete") {
       confirmDialog("Delete this entry?").then((ok) => {
         if (ok) deleteEntry(id);
@@ -615,12 +799,12 @@
   function exportCSV() {
     if (entries.length === 0) return showStatus("No entries to export yet.", "warn");
 
-    const header = ["dateISO", "dayName", "personName", "selection", "time", "timestampISO"];
+    const header = ["dateISO", "dayName", "personName", "company", "selection", "time", "timestampISO"];
     const lines = [header.map(csvEscape).join(",")];
 
     for (const e of entries.slice().sort((a, b) => (a.timestampISO < b.timestampISO ? -1 : 1))) {
       const time = formatTimeHHMM(new Date(e.timestampISO));
-      const row = [e.dateISO, e.dayName, e.personName, e.selection, time, e.timestampISO];
+      const row = [e.dateISO, e.dayName, e.personName, e.company || "", e.selection, time, e.timestampISO];
       lines.push(row.map(csvEscape).join(","));
     }
 
@@ -662,26 +846,24 @@
     persistEntriesLocal();
     cloudSave("wipe", {});
 
-    renderNameSelect();
+    renderCompanyFilter();
     renderNamesList();
     renderTables();
     updateCounts();
     clearMealSelection();
-    nameSelect.value = "";
+    clearPersonSelection();
     showStatus("All data wiped.", "good");
   }
 
   // ========== PIN Auth ==========
   async function verifyPin(pin) {
     if (!cloudEnabled()) return true;
-
     const encoded = encodeURIComponent(pin);
     try {
       const res = await fetch(`${API_URL}?action=verify&pin=${encoded}`);
       const data = await res.json();
       return data.ok === true;
     } catch {
-      // If offline, accept a previously-stored PIN
       const stored = localStorage.getItem(KEYS.pin);
       return stored && stored === pin;
     }
@@ -693,13 +875,11 @@
       pinError.textContent = "Please enter a PIN.";
       return;
     }
-
     pinSubmitBtn.disabled = true;
     pinSubmitBtn.textContent = "Checking…";
     pinError.textContent = "";
 
     const valid = await verifyPin(pin);
-
     if (valid) {
       localStorage.setItem(KEYS.pin, pin);
       pinOverlay.classList.add("hidden");
@@ -707,7 +887,6 @@
     } else {
       pinError.textContent = "Invalid PIN. Try again.";
     }
-
     pinSubmitBtn.disabled = false;
     pinSubmitBtn.textContent = "Enter";
   }
@@ -721,26 +900,59 @@
     saveBtn.addEventListener("click", saveEntry);
     clearSelectionBtn.addEventListener("click", () => {
       clearMealSelection();
+      clearPersonSelection();
       showStatus("Selection cleared.", "");
     });
 
     exportBtn.addEventListener("click", exportCSV);
 
-    nameSelect.addEventListener("change", () => {
-      const personId = nameSelect.value;
-      const person = names.find((n) => n.id === personId);
+    // Name picker: initials input
+    initialsInput.addEventListener("input", () => {
+      // Auto-uppercase
+      const pos = initialsInput.selectionStart;
+      initialsInput.value = initialsInput.value.toUpperCase();
+      initialsInput.setSelectionRange(pos, pos);
+      renderNamePickerResults();
+    });
 
-      nameSelect.classList.toggle("has-value", !!person);
+    initialsInput.addEventListener("focus", () => {
+      if (safeTrim(initialsInput.value) || companyFilter.value) {
+        renderNamePickerResults();
+      }
+    });
 
-      const hint = $("#nameHint");
-      if (person) {
-        hint.innerHTML = "";
-        const strong = document.createElement("strong");
-        strong.textContent = person.name;
-        hint.textContent = "Selected: ";
-        hint.appendChild(strong);
-      } else {
-        hint.textContent = 'Tip: use "Manage Names" to add people.';
+    // Keyboard navigation in results
+    initialsInput.addEventListener("keydown", (e) => {
+      const items = namePickerResults.querySelectorAll(".name-picker-item[data-person-id]");
+      if (items.length === 0) return;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        highlightItem(Math.min(highlightedIndex + 1, items.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        highlightItem(Math.max(highlightedIndex - 1, 0));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (highlightedIndex >= 0 && highlightedIndex < items.length) {
+          selectPerson(items[highlightedIndex].dataset.personId);
+        } else if (items.length === 1) {
+          selectPerson(items[0].dataset.personId);
+        }
+      } else if (e.key === "Escape") {
+        namePickerResults.classList.add("hidden");
+        highlightedIndex = -1;
+      }
+    });
+
+    // Company filter change
+    companyFilter.addEventListener("change", renderNamePickerResults);
+
+    // Close picker when clicking outside
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest("#namePicker")) {
+        namePickerResults.classList.add("hidden");
+        highlightedIndex = -1;
       }
     });
 
@@ -748,7 +960,7 @@
     tabToday.addEventListener("click", () => setTab("today"));
     tabAll.addEventListener("click", () => setTab("all"));
 
-    // All filters (debounced search)
+    // All filters
     rangeSelect.addEventListener("change", renderTables);
     searchInput.addEventListener("input", debounce(renderTables, 250));
 
@@ -765,6 +977,8 @@
 
     function closeNames() {
       closeModal(namesModal, namesModalBackdrop);
+      // Refresh company filter in case names changed
+      renderCompanyFilter();
     }
 
     closeNamesModalBtn.addEventListener("click", closeNames);
@@ -775,6 +989,14 @@
     newNameInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") addName();
     });
+    newCompanyInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") addName();
+    });
+
+    // Names modal search
+    namesSearchInput.addEventListener("input", debounce(() => {
+      renderNamesList(safeTrim(namesSearchInput.value));
+    }, 200));
 
     // Confirm modal
     confirmOkBtn.addEventListener("click", () => closeConfirm(true));
@@ -808,14 +1030,12 @@
   }
 
   async function startApp() {
-    // Try to load from cloud first
     if (cloudEnabled()) {
       showStatus("Syncing with Google Sheets…", "");
       const result = await refreshFromCloud();
       if (result && result.ok) {
         showStatus("Synced.", "good");
       } else if (result && result.error === "Invalid PIN") {
-        // PIN expired or changed — re-prompt
         localStorage.removeItem(KEYS.pin);
         pinOverlay.classList.remove("hidden");
         pinError.textContent = "PIN no longer valid. Please re-enter.";
@@ -823,13 +1043,12 @@
       } else {
         showStatus("Offline — using cached data.", "warn");
       }
-      // Process any queued offline changes
       await processQueue();
     } else {
       showStatus("Local-only mode (no API URL configured).", "");
     }
 
-    renderNameSelect();
+    renderCompanyFilter();
     renderTables();
     updateCounts();
   }
@@ -844,13 +1063,11 @@
         pinOverlay.classList.add("hidden");
         await startApp();
       } else {
-        // Show PIN screen
         pinOverlay.classList.remove("hidden");
       }
     } else {
-      // Local-only mode — hide PIN, go straight to app
       if (pinOverlay) pinOverlay.classList.add("hidden");
-      renderNameSelect();
+      renderCompanyFilter();
       renderTables();
       updateCounts();
       showStatus("Ready (local-only mode).", "");
