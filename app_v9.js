@@ -837,22 +837,23 @@
 
   // ========== Wipe ==========
   async function wipeAll() {
-    const ok = await confirmDialog("Wipe ALL data (names + entries)? This affects everyone.");
+    const ok = await confirmDialog("Clear local cache on this device only? This does not affect Google Sheets or other devices.");
     if (!ok) return;
 
     names = [];
     entries = [];
     persistNamesLocal();
     persistEntriesLocal();
-    cloudSave("wipe", {});
+    saveJSON(KEYS.queue, []);
 
     renderCompanyFilter();
     renderNamesList();
     renderTables();
     updateCounts();
+    updateSyncIndicator();
     clearMealSelection();
     clearPersonSelection();
-    showStatus("All data wiped.", "good");
+    showStatus("Local cache cleared. Reload to re-sync from Google Sheets.", "good");
   }
 
   // ========== PIN Auth ==========
