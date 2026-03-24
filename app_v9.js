@@ -694,14 +694,14 @@
     if (!entry) return;
 
     const mealOptions = [
-      "Starter + main course", "Main course + dessert", "2 starters",
-      "Starter", "Main course", "Dessert", "Starter + dessert"
+      "Starter + Main Course", "Main Course + Dessert", "2 Starters",
+      "Starter", "Main Course", "Dessert", "Starter + Dessert"
     ];
     const currentIdx = mealOptions.indexOf(entry.selection);
     const promptText =
       `Edit selection for ${entry.personName} on ${entry.dateISO}\n` +
-      `1) Starter + main course\n2) Main course + dessert\n3) 2 starters\n` +
-      `4) Starter\n5) Main course\n6) Dessert\n7) Starter + dessert\n\n` +
+      `1) Starter + Main Course\n2) Main Course + Dessert\n3) 2 Starters\n` +
+      `4) Starter\n5) Main Course\n6) Dessert\n7) Starter + Dessert\n\n` +
       `Enter 1–7 (current: ${currentIdx >= 0 ? currentIdx + 1 : entry.selection})`;
 
     const ans = window.prompt(promptText, currentIdx >= 0 ? String(currentIdx + 1) : "");
