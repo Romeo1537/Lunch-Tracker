@@ -344,7 +344,10 @@
 
     let filtered = names.slice();
 
-    if (company) {
+    // Only apply company filter when no initials are typed.
+    // If someone is typing initials, always search all companies so a
+    // previously-set filter cannot cause names to silently disappear.
+    if (company && !query) {
       filtered = filtered.filter((n) => (n.company || "") === company);
     }
 
